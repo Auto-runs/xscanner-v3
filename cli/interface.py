@@ -43,6 +43,10 @@ def main(
     url, url_file, threads, timeout, depth, profile, deep, no_crawl,
     no_waf_bypass, header, cookie, proxy, rate_limit,
     blind_callback, start_blind_server, output, verbose, details,
+    login_url, username, password, scope, exclude_scope,
+    test_headers, test_hpp, test_json, second_order, js_crawl,
+    report_html, report_csv, report_md, report_sarif,
+    checkpoint, exclude_path,
 ):
     """
     \b
@@ -121,10 +125,25 @@ def main(
         info(f"Blind XSS:   {blind_callback}")
 
     # ─── Run ─────────────────────────────────────────────────────────────────
-    asyncio.run(_run(config, output, details, start_blind_server))
+    asyncio.run(_run(config, output, details, start_blind_server,
+                    login_url=login_url, username=username, password=password,
+                    scope=list(scope), exclude_scope=list(exclude_scope),
+                    test_headers=test_headers, test_hpp=test_hpp, test_json=test_json,
+                    second_order=second_order, js_crawl=js_crawl,
+                    report_html=report_html, report_csv=report_csv,
+                    report_md=report_md, report_sarif=report_sarif,
+                    checkpoint=checkpoint, exclude_path=list(exclude_path)))
 
 
-async def _run(config: ScanConfig, output: str, print_details: bool, blind_server: bool):
+async def _run(
+    config: ScanConfig, output: str, print_details: bool, blind_server: bool,
+    login_url=None, username=None, password=None,
+    scope=None, exclude_scope=None,
+    test_headers=False, test_hpp=False, test_json=False,
+    second_order=False, js_crawl=False,
+    report_html=None, report_csv=None, report_md=None, report_sarif=None,
+    checkpoint=False, exclude_path=None,
+):
     from scanner.engine_v2 import ScanEngineV2 as ScanEngine
     from scanner.blind_server import BlindXSSServer
 

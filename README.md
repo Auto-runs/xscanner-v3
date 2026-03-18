@@ -1,8 +1,31 @@
-# XScanner v3
+<div align="center">
 
-**Framework deteksi XSS (Cross-Site Scripting) berbasis Python dengan 152 juta+ kombinasi payload.**
+```
+██╗  ██╗███████╗ ██████╗ █████╗ ███╗   ██╗███╗   ██╗███████╗██████╗
+╚██╗██╔╝██╔════╝██╔════╝██╔══██╗████╗  ██║████╗  ██║██╔════╝██╔══██╗
+ ╚███╔╝ ███████╗██║     ███████║██╔██╗ ██║██╔██╗ ██║█████╗  ██████╔╝
+ ██╔██╗ ╚════██║██║     ██╔══██║██║╚██╗██║██║╚██╗██║██╔══╝  ██╔══██╗
+██╔╝ ██╗███████║╚██████╗██║  ██║██║ ╚████║██║ ╚████║███████╗██║  ██║
+╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
+```
 
-> ⚠️ Gunakan hanya pada sistem yang Anda miliki atau memiliki izin tertulis eksplisit untuk diuji. Penggunaan tanpa izin adalah tindak pidana.
+### Next-Generation XSS Detection & Exploitation Framework
+
+*More intelligent. More concurrent. More revolutionary.*
+
+---
+
+![Python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square&logo=python&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-53%20passed-brightgreen?style=flat-square&logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![Version](https://img.shields.io/badge/version-3.0.0-red?style=flat-square)
+![Async](https://img.shields.io/badge/engine-async%20%2B%20aiohttp-orange?style=flat-square)
+![WAF](https://img.shields.io/badge/WAF%20bypass-9%20vendors-purple?style=flat-square)
+
+> ⚠️ **For authorized penetration testing and security research ONLY.**
+> Using this tool on systems without explicit written permission is illegal.
+
+</div>
 
 ---
 

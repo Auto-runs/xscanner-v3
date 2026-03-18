@@ -221,30 +221,65 @@ class ContextDetector:
         if self.CANARY not in body:
             return Context.UNKNOWN
 
-        idx = body.index(self.CANARY)
-        before = body[max(0, idx - 100):idx].lower()
-        after  = body[idx + len(self.CANARY):idx + len(self.CANARY) + 50].lower()
+        idx    = body.index(self.CANARY)
+        before = body[max(0, idx - 200):idx]
+        before_lo = before.lower()
 
-        # Inside <script> tag
-        if re.search(r"<script[^>]*>", before):
-            if "'" in before.split("\n")[-1] or '"' in before.split("\n")[-1]:
+        # ── 1. Inside <script> block ──────────────────────────────────────────
+        # Find the LAST <script> open and last </script> close before canary
+        last_script_open  = before_lo.rfind("<script")
+        last_script_close = before_lo.rfind("</script")
+        if last_script_open > last_script_close:
+            # We are inside a script block — determine string context
+            last_line = before.split("\n")[-1]
+            # Count unescaped double/single/backtick quotes to detect open string
+            dq = last_line.count('"') - last_line.count('\\"')
+            sq = last_line.count("'") - last_line.count("\\'")
+            bt = last_line.count("`")
+            if dq % 2 == 1 or sq % 2 == 1:
                 return Context.JS_STRING
-            if "`" in before.split("\n")[-1]:
+            if bt % 2 == 1:
                 return Context.JS_TEMPLATE
             return Context.JS
 
-        # Inside HTML comment
-        if "<!--" in before:
+        # ── 2. Inside HTML comment <!-- ... --> ───────────────────────────────
+        last_comment_open  = before_lo.rfind("<!--")
+        last_comment_close = before_lo.rfind("-->")
+        if last_comment_open > last_comment_close:
             return Context.COMMENT
 
-        # Inside an attribute
-        attr_match = re.search(r"<[\w]+", before)
-        if attr_match:
-            return Context.ATTRIBUTE
-
-        # Inside style/css
-        if re.search(r"<style[^>]*>", before) or re.search(r'style=["\'][^"\']*$', before):
+        # ── 3. Inside <style> block ───────────────────────────────────────────
+        last_style_open  = before_lo.rfind("<style")
+        last_style_close = before_lo.rfind("</style")
+        if last_style_open > last_style_close:
             return Context.CSS
 
-        # Default: HTML body
+        # ── 4. Inside an unclosed HTML tag — attribute or URL context ────────
+        # True attribute: last < comes AFTER last > — we're inside an open tag
+        last_lt = before.rfind("<")
+        last_gt = before.rfind(">")
+        if last_lt > last_gt:
+            after_lt = before[last_lt:]
+            if re.match(r"<[\w]", after_lt):
+                # ── 4a. URL attribute? Check BEFORE generic attribute ─────────
+                # href="/path?q=CANARY" / src="..." / action="..." etc.
+                # The key: a URL attribute name immediately precedes the open quote
+                url_attr_pattern = re.search(
+                    r'(?:href|src|action|formaction|data|cite|poster|'
+                    r'longdesc|usemap|manifest|codebase)\s*=\s*["\']?([^"\'> ]*)$',
+                    after_lt,
+                    re.IGNORECASE,
+                )
+                if url_attr_pattern:
+                    # Inside a URL-type attribute — canary is in URL position
+                    url_val = url_attr_pattern.group(1)
+                    # If value contains 'javascript:' prefix, it's JS context
+                    if url_val.lstrip().lower().startswith("javascript:"):
+                        return Context.JS
+                    return Context.URL
+
+                # ── 4b. Generic attribute (value="" or bare) ─────────────────
+                return Context.ATTRIBUTE
+
+        # ── 6. Default: HTML body text ────────────────────────────────────────
         return Context.HTML

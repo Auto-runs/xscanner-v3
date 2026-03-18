@@ -41,7 +41,7 @@ from scanner.header_injector import (
     HeaderInjector, CSRFHandler,
     ContentTypeAnalyzer, RateLimitHandler,
 )
-from scanner.real_world import HPPTester, SecondOrderTracker
+from scanner.real_world import HPPTester, SecondOrderTracker, ScopeManager, AuthHandler, JSParamExtractor, CheckpointManager
 
 # Payloads per profile from combinatorial engine
 COMBO_TOP_N  = {"fast": 200, "normal": 500, "deep": 2000, "stealth": 300}
@@ -103,6 +103,18 @@ class ScanEngineV2:
         self.second_order     = SecondOrderTracker(self.http)
         self.json_tester      = JSONAPITester(self.http)
 
+        # Scope, auth, JS param extraction, checkpoint
+        self.scope_manager  = ScopeManager(
+            in_scope      = config.scope,
+            out_scope     = config.exclude_scope,
+            exclude_paths = config.exclude_path,
+        )
+        self.auth_handler   = AuthHandler(self.http)
+        self.js_extractor   = JSParamExtractor(self.http) if config.js_crawl else None
+        # CheckpointManager needs a key — use joined target list as identifier
+        _ckpt_key = "|".join(sorted(config.targets))
+        self.checkpoint_mgr = CheckpointManager(_ckpt_key) if config.checkpoint else None
+
         # Caches
         self._waf_cache: Dict[str, Optional[str]] = {}
         self._filter_cache: Dict[str, object]      = {}  # url → CharacterMatrix
@@ -114,14 +126,43 @@ class ScanEngineV2:
     # ─── Public API ──────────────────────────────────────────────────────────
 
     async def run(self) -> List[Finding]:
+        # ── Auth login (if credentials provided) ─────────────────────────────
+        if self.config.login_url and self.config.username and self.config.password:
+            info(f"Authenticating at {self.config.login_url}...")
+            ok = await self.auth_handler.login(
+                self.config.login_url,
+                self.config.username,
+                self.config.password,
+            )
+            if ok:
+                info("Authentication successful")
+            else:
+                warn("Authentication failed — continuing without session")
+
+        # ── Load checkpoint if resuming ───────────────────────────────────────
+        if self.checkpoint_mgr:
+            found = self.checkpoint_mgr.load()
+            if found:
+                # _state["tested"] is the list of already-tested payload keys
+                already = self.checkpoint_mgr._state.get("tested", [])
+                self._tested_payloads = set(already)
+                info(f"Checkpoint loaded — resuming ({len(self._tested_payloads)} payloads already done)")
+
         tasks = [self._scan_url(url) for url in self.config.targets]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Second-order XSS verification pass
-        if self.second_order._records:
+        # ── Second-order XSS verification pass ───────────────────────────────
+        if self.config.second_order and self.second_order._records:
             so_findings = await self.second_order.verify_all()
             async with self._lock:
                 self.findings.extend(so_findings)
+
+        # ── Save checkpoint ───────────────────────────────────────────────────
+        if self.checkpoint_mgr:
+            self.checkpoint_mgr.save(
+                list(self._tested_payloads),
+                self.findings,
+            )
 
         self._print_stats()
         return self.findings
@@ -132,11 +173,26 @@ class ScanEngineV2:
         info(f"Scanning: {url}")
         self._stats["urls_scanned"] += 1
 
+        # ── Scope check ───────────────────────────────────────────────────────
+        if not self.scope_manager.is_in_scope(url):
+            warn(f"Out of scope — skipping: {url}")
+            return
+
         # Crawl
         if self.config.crawl:
             targets = await Spider(self.config, self.http).crawl(url)
         else:
             targets = self._url_to_targets(url)
+
+        # ── JS param extraction (SPA support) ─────────────────────────────────
+        if self.js_extractor:
+            js_targets = await self.js_extractor.extract_from_page(url)
+            if js_targets:
+                info(f"JSParamExtractor: +{len(js_targets)} params from JS files")
+                targets.extend(js_targets)
+
+        # ── Scope filter on discovered sub-targets ────────────────────────────
+        targets = self.scope_manager.filter_targets(targets)
 
         if not targets:
             warn(f"No injection points found: {url}")
@@ -155,7 +211,7 @@ class ScanEngineV2:
         waf = self._waf_cache.get(host)
 
         # Header injection test (once per URL, not per param)
-        if getattr(self.config, 'test_headers', False):
+        if self.config.test_headers:
             base_resp = await self.http.get(url)
             baseline  = base_resp.text if base_resp else ""
             hdr_findings = await self.header_injector.test_url(url, baseline)
@@ -190,7 +246,7 @@ class ScanEngineV2:
         ct_info = self.content_analyzer.analyze(baseline_resp)
         if not self.content_analyzer.should_test_html_payloads(baseline_resp):
             # JSON endpoint — use JSON engine only
-            if getattr(self.config, 'test_json', False):
+            if self.config.test_json:
                 json_findings = await self.json_tester.test_json_endpoint(
                     target.url, target.params,
                     method=target.method,
@@ -221,7 +277,7 @@ class ScanEngineV2:
             target = await self.csrf_handler.prepare_post(target)
 
         # ── HPP testing ───────────────────────────────────────────────────
-        if getattr(self.config, 'test_hpp', False) and target.method == "GET":
+        if self.config.test_hpp and target.method == "GET":
             hpp_findings = await self.hpp_tester.test(target, baseline_body)
             async with self._lock:
                 self.findings.extend(hpp_findings)
@@ -280,7 +336,7 @@ class ScanEngineV2:
 
         # 7. JSON API payloads (if enabled)
         json_list = []
-        if getattr(self.config, 'test_json', False):
+        if self.config.test_json:
             json_raw  = self.json_engine.generate(top_n=json_n)
             json_list = [(p, lbl) for p, _, ct, lbl in json_raw]
 
@@ -317,16 +373,17 @@ class ScanEngineV2:
             self._stats["payloads_tested"] += 1
             self._stats["requests_sent"]   += 1
 
-            # Rate limit check
-            resp_check = await self._send(target)
-            await self.rate_limiter.handle(resp_check)
+            # Adaptive backoff on None result (blocked/error) — HttpClient handles
+            # config.rate_limit internally, so we only add backoff on repeated blocks
+            if result is None:
+                await self.rate_limiter.handle(None)
 
             self.sequencer.feedback(payload, encoding, result)
 
             if result and result.get("reflected"):
                 found = True
                 # Record for second-order verification if POST
-                if target.method == "POST" and getattr(self.config, 'second_order', False):
+                if target.method == "POST" and self.config.second_order:
                     canary = self.second_order.make_canary(target.param_key)
                     self.second_order.record(
                         target.url, target.param_key, payload, canary,

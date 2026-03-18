@@ -16,7 +16,7 @@ from utils.logger import debug, warn
 class HttpClient:
     """
     Async HTTP client wrapping aiohttp with:
-    - Connection pooling
+    - Connection pooling (lazy session creation)
     - Automatic retry with exponential back-off
     - Optional proxy routing
     - Rate limiting
@@ -26,33 +26,46 @@ class HttpClient:
     def __init__(self, config: ScanConfig):
         self.config     = config
         self.timeout    = aiohttp.ClientTimeout(total=config.timeout)
-        self._semaphore = asyncio.Semaphore(config.threads)
+        self._semaphore: Optional[asyncio.Semaphore] = None
         self._last_req  = 0.0
         self._session: Optional[aiohttp.ClientSession] = None
 
-        headers = {**DEFAULT_HEADERS, **config.headers}
-        connector = aiohttp.TCPConnector(
-            ssl=False,
-            limit=config.threads * 2,
-            force_close=False,
-            enable_cleanup_closed=True,
-        )
-        self._session = aiohttp.ClientSession(
-            headers=headers,
-            connector=connector,
-            timeout=self.timeout,
-            cookies=config.cookies,
-        )
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Lazily create the aiohttp session on first use (requires running event loop)."""
+        if self._session is None or self._session.closed:
+            headers = {**DEFAULT_HEADERS, **self.config.headers}
+            connector = aiohttp.TCPConnector(
+                ssl=False,
+                limit=self.config.threads * 2,
+                force_close=False,
+                enable_cleanup_closed=True,
+            )
+            self._session = aiohttp.ClientSession(
+                headers=headers,
+                connector=connector,
+                timeout=self.timeout,
+                cookies=self.config.cookies,
+                # Don't auto-read http_proxy/https_proxy env vars —
+                # we manage proxy explicitly via config.proxy only
+                trust_env=False,
+            )
+        return self._session
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Lazily create semaphore (requires running event loop)."""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.config.threads)
+        return self._semaphore
 
     # ─── Public API ───────────────────────────────────────────────────────────
 
-    async def get(self, url: str, params: Dict = None, **kwargs) -> Optional[aiohttp.ClientResponse]:
+    async def get(self, url: str, params: Dict = None, **kwargs) -> Optional["ResponseWrapper"]:
         return await self._request("GET", url, params=params, **kwargs)
 
-    async def post(self, url: str, data: Dict = None, **kwargs) -> Optional[aiohttp.ClientResponse]:
+    async def post(self, url: str, data: Dict = None, **kwargs) -> Optional["ResponseWrapper"]:
         return await self._request("POST", url, data=data, **kwargs)
 
-    async def request(self, method: str, url: str, **kwargs) -> Optional[aiohttp.ClientResponse]:
+    async def request(self, method: str, url: str, **kwargs) -> Optional["ResponseWrapper"]:
         return await self._request(method, url, **kwargs)
 
     # ─── Core ─────────────────────────────────────────────────────────────────
@@ -65,15 +78,17 @@ class HttpClient:
         **kwargs,
     ) -> Optional["ResponseWrapper"]:
         await self._rate_limit()
+        session   = self._get_session()
+        semaphore = self._get_semaphore()
 
         proxy = self.config.proxy or None
         if proxy:
             kwargs["proxy"] = proxy
 
-        async with self._semaphore:
+        async with semaphore:
             for attempt in range(retries):
                 try:
-                    async with self._session.request(method, url, **kwargs) as resp:
+                    async with session.request(method, url, **kwargs) as resp:
                         body = await resp.text(errors="replace")
                         headers = dict(resp.headers)
                         return ResponseWrapper(

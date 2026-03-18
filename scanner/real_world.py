@@ -406,6 +406,7 @@ class JSParamExtractor:
     def _extract_from_js(self, base_url: str, js_code: str) -> List[ScanTarget]:
         targets = []
         base_parsed = urlparse(base_url)
+        base_netloc = base_parsed.netloc.lower()
 
         for pattern, source in self.PATTERNS:
             matches = re.findall(pattern, js_code, re.IGNORECASE)
@@ -418,6 +419,13 @@ class JSParamExtractor:
                 elif match.startswith("http"):
                     full_url = match
                 else:
+                    continue
+
+                # ── Domain boundary check — never scan cross-domain URLs ──────
+                parsed_target = urlparse(full_url)
+                target_netloc = parsed_target.netloc.lower()
+                if target_netloc and target_netloc != base_netloc:
+                    debug(f"JSParamExtractor: skipping cross-domain URL {full_url}")
                     continue
 
                 # Extract params from URL

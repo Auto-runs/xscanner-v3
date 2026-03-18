@@ -63,7 +63,8 @@ class Finding:
 
 @dataclass
 class ScanConfig:
-    targets:        list[str]  = field(default_factory=list)
+    # ── Core ────────────────────────────────────────────────────────────────
+    targets:        list       = field(default_factory=list)
     threads:        int        = 10
     timeout:        int        = 10
     depth:          int        = 2
@@ -79,6 +80,32 @@ class ScanConfig:
     waf_bypass:     bool       = True
     verbose:        bool       = False
     rate_limit:     float      = 0.0   # seconds between requests (0 = no limit)
+
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    login_url:      Optional[str] = None
+    username:       Optional[str] = None
+    password:       Optional[str] = None
+
+    # ── Scope ────────────────────────────────────────────────────────────────
+    scope:          list       = field(default_factory=list)
+    exclude_scope:  list       = field(default_factory=list)
+    exclude_path:   list       = field(default_factory=list)
+
+    # ── Extended test flags ──────────────────────────────────────────────────
+    test_headers:   bool       = False   # inject XSS into HTTP headers
+    test_hpp:       bool       = False   # HTTP parameter pollution
+    test_json:      bool       = False   # JSON API endpoints
+    second_order:   bool       = False   # track + verify stored/second-order XSS
+    js_crawl:       bool       = False   # extract params from JavaScript files
+
+    # ── Report formats ───────────────────────────────────────────────────────
+    report_html:    Optional[str] = None
+    report_csv:     Optional[str] = None
+    report_md:      Optional[str] = None
+    report_sarif:   Optional[str] = None
+
+    # ── Checkpoint (save/resume) ─────────────────────────────────────────────
+    checkpoint:     bool       = False
 
 
 # ─── Common Headers ───────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ Pipeline:
 
 import base64
 import random
+import re
 from typing import List, Tuple, Optional
 
 from utils.config import Context
@@ -215,46 +216,97 @@ class AdaptiveSequencer:
     - Learns within a single scan session
     """
 
+class AdaptiveSequencer:
+    """
+    Dynamically re-order and select payloads during a scan
+    based on real-time feedback.
+
+    - If a payload gets reflected → prioritize similar payloads
+    - If a payload gets blocked → deprioritize that family
+    - Learns within a single scan session
+
+    Family resolution order:
+    1. Parse tag from structured label: "html:svg:onerror:none" → "svg"
+    2. Extract from payload regex if label is unstructured
+    3. Fallback to full label as family key
+    """
+
     def __init__(self):
-        self._family_scores: dict = {}  # method_label → score adjustment
+        self._family_scores: dict = {}   # family_key → cumulative score adj
         self._blocked_patterns: set = set()
 
-    def feedback(self, payload: str, label: str, result: Optional[dict]):
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_family(label: str, payload: str) -> str:
+        """
+        Extract a stable family key from a label+payload pair.
+
+        Combo engine labels look like "html:svg:onerror:none" — the tag name
+        is always the 2nd colon-separated component.  For other label formats
+        (mxss, blind, chain:…) we fall back to a regex on the payload itself.
+        """
+        parts = label.split(":")
+        if len(parts) >= 2:
+            tag = parts[1].strip()
+            # Sanity-check: should be a real HTML tag or keyword
+            if re.match(r'^[a-z][\w-]{1,20}$', tag):
+                return tag
+
+        # Fallback: extract first HTML tag name from payload
+        m = re.search(r'<([a-z][\w:-]{1,20})', payload, re.IGNORECASE)
+        if m:
+            return m.group(1).lower()
+
+        # Last resort: first 12 chars of label
+        return label[:12]
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def feedback(self, payload: str, label: str, result):
         """
         Provide feedback on a payload result.
-        result=None means blocked/no reflection.
-        result=dict means detected.
+          result=None  → blocked/no reflection → penalise family
+          result=dict  → detected              → boost family
 
-        Penalty is AGGRESSIVE: first block = -0.6 (immediate deprioritize).
-        This matches real-world behavior where WAF blocks entire families.
+        Penalty is aggressive on first block — WAFs block entire families.
+        Boost is tag-family-wide so sibling payloads benefit immediately.
         """
+        family = self._extract_family(label, payload)
+
         if result is None:
-            # Aggressive penalty — first block drops below most other families
-            current = self._family_scores.get(label, 0)
-            # First block: -0.6, subsequent blocks: -0.2 each (diminishing)
+            current = self._family_scores.get(family, 0.0)
+            # First block → heavy penalty; repeated blocks → smaller increments
             penalty = -0.6 if current >= 0 else -0.2
-            self._family_scores[label] = current + penalty
-            # Remember blocked payload prefix for pattern matching
+            self._family_scores[family] = current + penalty
+            # Remember payload prefix so near-duplicates are also deprioritised
             if len(payload) > 5:
                 self._blocked_patterns.add(payload[:12])
         else:
-            # Boost this family proportional to confidence
-            conf = result.get("confidence", 0.5)
-            # Successful families get strong boost to rise above others
-            self._family_scores[label] = self._family_scores.get(label, 0) + (conf * 1.5)
+            conf = result.get("confidence", 0.5) if isinstance(result, dict) else 0.5
+            # Strong boost — spread to the whole tag family
+            self._family_scores[family] = (
+                self._family_scores.get(family, 0.0) + conf * 2.0
+            )
 
     def rerank(
         self,
         payloads: List[Tuple[str, str, float]],
     ) -> List[Tuple[str, str, float]]:
-        """Re-rank payloads based on accumulated feedback."""
+        """Re-rank payloads based on accumulated family feedback."""
+
         def adjusted_score(item):
-            payload, label, score = item
-            # Check if similar to blocked patterns
+            payload, label, base_score = item
+            # Hard-filter near-duplicates of blocked payloads
             for pattern in self._blocked_patterns:
                 if payload.startswith(pattern):
                     return -1.0
-            adjustment = self._family_scores.get(label, 0)
-            return score + adjustment
+            family = self._extract_family(label, payload)
+            return base_score + self._family_scores.get(family, 0.0)
 
         return sorted(payloads, key=adjusted_score, reverse=True)
+
+    def is_blocked_family(self, label: str, payload: str) -> bool:
+        """Returns True if this family has been heavily penalised."""
+        family = self._extract_family(label, payload)
+        return self._family_scores.get(family, 0.0) < -0.5

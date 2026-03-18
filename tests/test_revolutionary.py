@@ -255,29 +255,29 @@ class TestAdaptiveSequencer:
     def test_boosts_successful_family(self):
         from payloads.smart_generator import AdaptiveSequencer
         seq = AdaptiveSequencer()
-        # Provide positive feedback for "event_handler" family
-        seq.feedback("<img onerror=alert(1)>", "event_handler", {"confidence": 0.9})
-        # Rerank
+        # Positive feedback for img family (structured label like combo engine produces)
+        seq.feedback("<img onerror=alert(1)>", "html:img:onerror:none", {"confidence": 0.9})
         payloads = [
-            ("payload1", "script_injection", 0.5),
-            ("payload2", "event_handler",    0.5),
+            ("payload1", "html:script:onerror:none", 0.5),
+            ("payload2", "html:img:onerror:none",    0.5),
         ]
         ranked = seq.rerank(payloads)
-        # event_handler should be ranked first (boosted)
-        assert ranked[0][1] == "event_handler"
+        # img family should be first (boosted by feedback)
+        assert seq._extract_family(ranked[0][1], ranked[0][0]) == "img"
 
     def test_penalizes_blocked_family(self):
         from payloads.smart_generator import AdaptiveSequencer
         seq = AdaptiveSequencer()
-        # Multiple blocks to accumulate sufficient penalty
-        for _ in range(6):
-            seq.feedback("<script>alert</script>", "script_injection", None)
+        # Block script family multiple times to accumulate penalty
+        for _ in range(4):
+            seq.feedback("<script>alert</script>", "html:script:onerror:none", None)
         payloads = [
-            ("payload1", "script_injection", 0.9),
-            ("payload2", "event_handler",    0.5),
+            ("<script>alert(1)</script>", "html:script:onerror:none", 0.9),
+            ("<img src=x onerror=alert(1)>", "html:img:onerror:none", 0.5),
         ]
         ranked = seq.rerank(payloads)
-        assert ranked[0][1] == "event_handler"
+        # img should win despite lower base score, script is penalized
+        assert seq._extract_family(ranked[0][1], ranked[0][0]) == "img"
 
     def test_blocks_similar_to_blocked_pattern(self):
         from payloads.smart_generator import AdaptiveSequencer

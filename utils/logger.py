@@ -40,7 +40,7 @@ def banner():
     """
     console.print(art, style="bold green")
     console.print(
-        "  [dim]Next-Generation XSS Detection Framework v2.0[/dim]  "
+        "  [dim]Next-Generation XSS Detection Framework v3.0[/dim]  "
         "[bold red]⚠ Authorized Use Only[/bold red]\n"
     )
 

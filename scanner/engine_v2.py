@@ -32,7 +32,7 @@ from crawler.spider import Spider, ContextDetector
 from payloads.generator import PayloadGenerator
 from payloads.smart_generator import SmartGenerator, AdaptiveSequencer
 from payloads.combinatorial_engine import CombinatorialEngine
-from payloads.mxss_and_api import MXSSEngine, JSONAPIEngine, JSONAPITester
+from payloads.mxss_and_api import MXSSEngine, JSONAPIEngine, JSONAPITester, BlindXSSEngine, WAFChainEngine
 from detection.analyzer import DetectionEngine
 from detection.fuzzy import FuzzyDetector, ResponseDiffer
 from waf_bypass.detector import WAFDetector, EvasionEngine
@@ -47,6 +47,7 @@ from scanner.real_world import HPPTester, SecondOrderTracker
 COMBO_TOP_N  = {"fast": 200, "normal": 500, "deep": 2000, "stealth": 300}
 MXSS_TOP_N   = {"fast":  50, "normal": 150, "deep":  500, "stealth":  80}
 JSON_TOP_N   = {"fast":  50, "normal": 150, "deep":  500, "stealth":  80}
+BLIND_TOP_N  = {"fast":  30, "normal": 100, "deep":  400, "stealth":  50}
 
 
 class ScanEngineV2:
@@ -75,6 +76,8 @@ class ScanEngineV2:
         self.combo_engine = CombinatorialEngine()
         self.mxss_engine  = MXSSEngine()
         self.json_engine  = JSONAPIEngine()
+        self.blind_engine = BlindXSSEngine()
+        self.waf_chain    = WAFChainEngine()
 
         # Detection engines
         self.detector  = DetectionEngine()
@@ -105,7 +108,7 @@ class ScanEngineV2:
         self._filter_cache: Dict[str, object]      = {}  # url → CharacterMatrix
         self._tested_payloads: Set[str]             = set()  # global dedup
 
-        total = self.combo_engine.total + self.mxss_engine.total + self.json_engine.total
+        total = self.combo_engine.total + self.mxss_engine.total + self.json_engine.total + self.blind_engine.total
         info(f"XScanner v5 ready — {total:,} total payload combinations")
 
     # ─── Public API ──────────────────────────────────────────────────────────
@@ -257,13 +260,23 @@ class ScanEngineV2:
         # 5. WAF evasion variants on top combos
         evasion_list = []
         if waf and self.config.waf_bypass:
-            for p, enc in combo_list[:15]:
-                evasion_list += [(ep, f"evasion:{t}")
-                                 for ep, t in self.evasion.apply(p, waf)]
+            # Use chained WAF evasion (single + pairs + triples)
+            for p, enc in combo_list[:30]:
+                chains = self.waf_chain.apply_chained(
+                    p, waf=waf,
+                    max_chain=3 if self.config.profile=='deep' else 2,
+                    top_n=30,
+                )
+                evasion_list += [(ep, f"chain:{t}") for ep, t in chains]
 
-        # 6. Blind XSS
-        blind_list = self.payload_gen.for_blind_xss(self.config.blind_callback) \
-                     if self.config.blind_callback else []
+        # 6. Blind XSS — full combinatorial engine
+        blind_list = []
+        if self.config.blind_callback:
+            blind_raw  = self.blind_engine.generate(
+                self.config.blind_callback,
+                top_n=BLIND_TOP_N.get(self.config.profile, 50)
+            )
+            blind_list = [(p, lbl) for p, _, lbl in blind_raw]
 
         # 7. JSON API payloads (if enabled)
         json_list = []
